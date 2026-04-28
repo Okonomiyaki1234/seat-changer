@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { supabase, Student, SeatLayout, ClassroomTemplate } from '@/lib/supabase';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -9,9 +9,27 @@ import { Label } from '@/components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
-import { Shuffle, Save, Upload, Plus, X, Grid3x3, Users, Settings } from 'lucide-react';
+import { Shuffle, Save, Upload, Plus, X, Grid3x3, Users, Settings, Download } from 'lucide-react';
+import { toPng } from 'html-to-image';
 import { toast } from 'sonner';
 import { Toaster } from '@/components/ui/sonner';
+
+type LotteryCard = {
+  seatIndex: number;
+  revealed: boolean;
+  drawnBy: string | null;
+};
+
+const shuffleArray = <T,>(items: T[]): T[] => {
+  const copied = [...items];
+
+  for (let i = copied.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copied[i], copied[j]] = [copied[j], copied[i]];
+  }
+
+  return copied;
+};
 
 export default function Home() {
   const [classCode, setClassCode] = useState('');
@@ -20,7 +38,55 @@ export default function Home() {
   const [students, setStudents] = useState<Student[]>([]);
   const [newStudentName, setNewStudentName] = useState('');
   const [assignments, setAssignments] = useState<(Student | null)[]>([]);
+  const [drawStudentName, setDrawStudentName] = useState('');
+  const [lotteryCards, setLotteryCards] = useState<LotteryCard[]>([]);
+  const [lotteryAssignments, setLotteryAssignments] = useState<(string | null)[]>([]);
+  const [selectedLotteryCardIndex, setSelectedLotteryCardIndex] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+  const resultCaptureRef = useRef<HTMLDivElement | null>(null);
+  const lotteryResultCaptureRef = useRef<HTMLDivElement | null>(null);
+
+  const totalSeats = seatLayout.rows * seatLayout.cols;
+
+  const availableSeats = useMemo(() => {
+    return Array.from({ length: totalSeats }, (_, i) => i)
+      .filter(i => !seatLayout.disabled.includes(i));
+  }, [totalSeats, seatLayout.disabled]);
+
+  const generateLotteryCards = useCallback((showToast: boolean) => {
+
+    if (availableSeats.length === 0) {
+      setLotteryCards([]);
+      setLotteryAssignments(Array(totalSeats).fill(null));
+      setDrawStudentName('');
+      setSelectedLotteryCardIndex(null);
+
+      if (showToast) {
+        toast.error('利用可能な席がありません');
+      }
+      return;
+    }
+
+    const cards = shuffleArray(availableSeats).map(seatIndex => ({
+      seatIndex,
+      revealed: false,
+      drawnBy: null,
+    }));
+
+    setLotteryCards(cards);
+    setLotteryAssignments(Array(totalSeats).fill(null));
+    setDrawStudentName('');
+    setSelectedLotteryCardIndex(null);
+
+    if (showToast) {
+      toast.success(`くじカードを${cards.length}枚生成しました`);
+    }
+  }, [availableSeats, totalSeats]);
+
+  useEffect(() => {
+    generateLotteryCards(false);
+  }, [generateLotteryCards]);
 
   const loadTemplate = async () => {
     if (!classCode.trim()) {
@@ -140,10 +206,6 @@ export default function Home() {
   };
 
   const shuffleSeats = () => {
-    const totalSeats = seatLayout.rows * seatLayout.cols;
-    const availableSeats = Array.from({ length: totalSeats }, (_, i) => i)
-      .filter(i => !seatLayout.disabled.includes(i));
-
     if (students.length > availableSeats.length) {
       toast.error('生徒数が利用可能な席数を超えています');
       return;
@@ -181,10 +243,156 @@ export default function Home() {
     toast.success('席替えを実行しました！');
   };
 
+  const resetLottery = () => {
+    generateLotteryCards(true);
+  };
+
+  const drawLotteryCard = (cardIndex: number) => {
+    const name = drawStudentName.trim();
+    if (!name) {
+      toast.error('名前を入力してください');
+      return;
+    }
+
+    if (lotteryCards.length === 0) {
+      toast.error('先にカードを生成してください');
+      return;
+    }
+
+    if (cardIndex < 0 || cardIndex >= lotteryCards.length) {
+      toast.error('カードを選択してください');
+      return;
+    }
+
+    const selectedCard = lotteryCards[cardIndex];
+
+    if (selectedCard.revealed) {
+      toast.error('このカードは開示済みです');
+      return;
+    }
+
+    const hiddenCardCount = lotteryCards.filter(card => !card.revealed).length;
+    if (hiddenCardCount === 0) {
+      toast.info('すべてのカードが開示済みです');
+      return;
+    }
+
+    const nextCards = [...lotteryCards];
+    nextCards[cardIndex] = {
+      ...selectedCard,
+      revealed: true,
+      drawnBy: name,
+    };
+
+    const nextAssignments =
+      lotteryAssignments.length === totalSeats
+        ? [...lotteryAssignments]
+        : Array(totalSeats).fill(null);
+
+    nextAssignments[selectedCard.seatIndex] = name;
+
+    setLotteryCards(nextCards);
+    setLotteryAssignments(nextAssignments);
+    setDrawStudentName('');
+    setSelectedLotteryCardIndex(null);
+    toast.success(`${name}さんの席は ${getSeatNumber(selectedCard.seatIndex)} です`);
+  };
+
+  const drawSelectedLotteryCard = () => {
+    if (selectedLotteryCardIndex === null) {
+      toast.error('カードを選択してください');
+      return;
+    }
+
+    drawLotteryCard(selectedLotteryCardIndex);
+  };
+
   const getSeatNumber = (index: number) => {
     const row = Math.floor(index / seatLayout.cols);
     const col = index % seatLayout.cols;
     return `${row + 1}-${col + 1}`;
+  };
+
+  const createResultImage = async () => {
+    if (assignments.length === 0) {
+      toast.error('先に席替えを実行してください');
+      return null;
+    }
+
+    if (!resultCaptureRef.current) {
+      toast.error('画像化する結果が見つかりません');
+      return null;
+    }
+
+    setIsExporting(true);
+    try {
+      return await toPng(resultCaptureRef.current, {
+        cacheBust: true,
+        pixelRatio: 2,
+        backgroundColor: '#ffffff',
+      });
+    } catch (error) {
+      console.error('Error creating image:', error);
+      toast.error('画像の作成に失敗しました');
+      return null;
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const createLotteryResultImage = async () => {
+    if (lotteryCards.length === 0 || lotteryCards.some(card => !card.revealed)) {
+      toast.error('全員のくじ引きが完了してから保存してください');
+      return null;
+    }
+
+    if (!lotteryResultCaptureRef.current) {
+      toast.error('画像化するくじ引き結果が見つかりません');
+      return null;
+    }
+
+    setIsExporting(true);
+    try {
+      return await toPng(lotteryResultCaptureRef.current, {
+        cacheBust: true,
+        pixelRatio: 2,
+        backgroundColor: '#ffffff',
+      });
+    } catch (error) {
+      console.error('Error creating lottery image:', error);
+      toast.error('画像の作成に失敗しました');
+      return null;
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const downloadResultImage = async () => {
+    const imageDataUrl = await createResultImage();
+    if (!imageDataUrl) return;
+
+    const link = document.createElement('a');
+    const safeClassCode = classCode.trim() || 'classroom';
+    const timeStamp = new Date().toISOString().replace(/[:.]/g, '-');
+
+    link.href = imageDataUrl;
+    link.download = `${safeClassCode}-seat-layout-${timeStamp}.png`;
+    link.click();
+    toast.success('席替え結果を画像保存しました');
+  };
+
+  const downloadLotteryResultImage = async () => {
+    const imageDataUrl = await createLotteryResultImage();
+    if (!imageDataUrl) return;
+
+    const link = document.createElement('a');
+    const safeClassCode = classCode.trim() || 'classroom';
+    const timeStamp = new Date().toISOString().replace(/[:.]/g, '-');
+
+    link.href = imageDataUrl;
+    link.download = `${safeClassCode}-lottery-seat-layout-${timeStamp}.png`;
+    link.click();
+    toast.success('くじ引き結果を画像保存しました');
   };
 
   return (
@@ -234,7 +442,7 @@ export default function Home() {
           <TabsList className="grid w-full grid-cols-3">
             <TabsTrigger value="students" className="gap-2">
               <Users className="w-4 h-4" />
-              生徒管理
+              生徒管理（一括決定用）
             </TabsTrigger>
             <TabsTrigger value="layout" className="gap-2">
               <Grid3x3 className="w-4 h-4" />
@@ -395,89 +603,283 @@ export default function Home() {
               <CardHeader>
                 <CardTitle>席替え実行</CardTitle>
                 <CardDescription>
-                  ランダムに席を配置します。前側希望の生徒は前半の席に優先配置されます。
+                  一括決定と個人でくじ引きの2つの方式で席替えできます。
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-6">
-                <Button
-                  onClick={shuffleSeats}
-                  disabled={students.length === 0}
-                  size="lg"
-                  className="w-full gap-2 text-lg h-14"
-                >
-                  <Shuffle className="w-5 h-5" />
-                  席替えを実行
-                </Button>
+                <Tabs defaultValue="bulk" className="space-y-6">
+                  <TabsList className="grid w-full grid-cols-2">
+                    <TabsTrigger value="bulk">一括決定</TabsTrigger>
+                    <TabsTrigger value="lottery">個人でくじ引き</TabsTrigger>
+                  </TabsList>
 
-                {assignments.length > 0 && (
-                  <div className="bg-gray-50 p-6 rounded-lg">
-                    <div className="mb-4 text-center">
-                      <Badge className="bg-green-100 text-green-800 border-green-300">
-                        黒板・前方向
-                      </Badge>
+                  <TabsContent value="bulk" className="space-y-6">
+                    <Button
+                      onClick={shuffleSeats}
+                      disabled={students.length === 0}
+                      size="lg"
+                      className="w-full gap-2 text-lg h-14"
+                    >
+                      <Shuffle className="w-5 h-5" />
+                      席替えを実行
+                    </Button>
+
+                    <div className="grid grid-cols-1 gap-3">
+                      <Button
+                        variant="outline"
+                        onClick={downloadResultImage}
+                        disabled={assignments.length === 0 || isExporting}
+                        className="gap-2 h-11"
+                      >
+                        <Download className="w-4 h-4" />
+                        画像として保存
+                      </Button>
                     </div>
 
-                    <div
-                      className="grid gap-2 mx-auto"
-                      style={{
-                        gridTemplateColumns: `repeat(${seatLayout.cols}, minmax(0, 1fr))`,
-                        maxWidth: `${seatLayout.cols * 120}px`,
-                      }}
-                    >
-                      {assignments.map((student, index) => {
-                        const isDisabled = seatLayout.disabled.includes(index);
-                        const isFrontHalf = index < Math.floor(seatLayout.rows / 2) * seatLayout.cols;
+                    {assignments.length > 0 && (
+                      <div ref={resultCaptureRef} className="bg-gray-50 p-6 rounded-lg">
+                        <div className="mb-4 text-center">
+                          <Badge className="bg-green-100 text-green-800 border-green-300">
+                            黒板・前方向
+                          </Badge>
+                        </div>
 
-                        return (
-                          <div
-                            key={index}
+                        <div
+                          className="grid gap-2 mx-auto"
+                          style={{
+                            gridTemplateColumns: `repeat(${seatLayout.cols}, minmax(0, 1fr))`,
+                            maxWidth: `${seatLayout.cols * 120}px`,
+                          }}
+                        >
+                          {assignments.map((student, index) => {
+                            const isDisabled = seatLayout.disabled.includes(index);
+                            const isFrontHalf = index < Math.floor(seatLayout.rows / 2) * seatLayout.cols;
+
+                            return (
+                              <div
+                                key={index}
+                                className={`
+                                  aspect-square rounded-lg border-2 p-2
+                                  flex flex-col items-center justify-center text-center
+                                  transition-all
+                                  ${isDisabled
+                                    ? 'bg-gray-200 border-gray-300'
+                                    : student
+                                      ? isFrontHalf && student.preferFront
+                                        ? 'bg-blue-100 border-blue-400 shadow-md'
+                                        : 'bg-white border-gray-300 shadow-sm'
+                                      : 'bg-gray-50 border-gray-200'
+                                  }
+                                `}
+                              >
+                                {!isDisabled && student && (
+                                  <>
+                                    <div className="text-xs text-gray-500 mb-1">
+                                      {getSeatNumber(index)}
+                                    </div>
+                                    <div className="text-sm font-semibold text-gray-800 break-words w-full">
+                                      {student.name}
+                                    </div>
+                                    {student.preferFront && (
+                                      <Badge variant="secondary" className="mt-1 text-xs bg-blue-200 text-blue-800">
+                                        前側
+                                      </Badge>
+                                    )}
+                                  </>
+                                )}
+                                {!isDisabled && !student && (
+                                  <div className="text-xs text-gray-400">空席</div>
+                                )}
+                                {isDisabled && (
+                                  <div className="text-xs text-gray-400">×</div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {assignments.length === 0 && (
+                      <p className="text-center text-gray-400 py-12">
+                        席替えを実行すると、ここに結果が表示されます
+                      </p>
+                    )}
+                  </TabsContent>
+
+                  <TabsContent value="lottery" className="space-y-6">
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                      <Card className="border-dashed md:col-span-2">
+                        <CardHeader className="pb-3">
+                          <CardTitle className="text-base">くじ引き操作</CardTitle>
+                          <CardDescription>
+                            名前を入力して未開示カードを1枚引くと、対応する席IDが公開されます。
+                          </CardDescription>
+                        </CardHeader>
+                        <CardContent className="space-y-3">
+                          <div className="flex flex-col sm:flex-row gap-2">
+                            <Input
+                              placeholder="引く人の名前"
+                              value={drawStudentName}
+                              onChange={(e) => setDrawStudentName(e.target.value)}
+                              onKeyDown={(e) => e.key === 'Enter' && drawSelectedLotteryCard()}
+                            />
+                            <Button
+                              onClick={drawSelectedLotteryCard}
+                              disabled={
+                                !drawStudentName.trim()
+                                || selectedLotteryCardIndex === null
+                                || lotteryCards.every(card => card.revealed)
+                              }
+                              className="gap-2"
+                            >
+                              <Shuffle className="w-4 h-4" />
+                              選んだカードを引く
+                            </Button>
+                          </div>
+                          <div className="text-sm text-gray-600">
+                            未開示カード: {lotteryCards.filter(card => !card.revealed).length} / {lotteryCards.length}
+                          </div>
+                          <div className="text-sm text-gray-600">
+                            {selectedLotteryCardIndex === null
+                              ? '未開示カードを1枚選択してください'
+                              : `選択中: カード ${selectedLotteryCardIndex + 1}`}
+                          </div>
+                        </CardContent>
+                      </Card>
+
+                      <Card className="border-dashed">
+                        <CardHeader className="pb-3">
+                          <CardTitle className="text-base">カード管理</CardTitle>
+                          <CardDescription>
+                            有効席数と同数のカードを再生成します。
+                          </CardDescription>
+                        </CardHeader>
+                        <CardContent className="space-y-2">
+                          <div className="text-sm text-gray-600">
+                              有効席: {availableSeats.length}席
+                          </div>
+                          <Button variant="outline" onClick={resetLottery} className="w-full">
+                            リセット
+                          </Button>
+                        </CardContent>
+                      </Card>
+                    </div>
+
+                    <div className="bg-gray-50 p-4 rounded-lg space-y-3">
+                      <div className="text-sm font-medium text-gray-700">くじカード一覧</div>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2">
+                        {lotteryCards.map((card, index) => (
+                          <button
+                            type="button"
+                            key={`${card.seatIndex}-${index}`}
+                            onClick={() => {
+                              if (!card.revealed) {
+                                setSelectedLotteryCardIndex(index);
+                              }
+                            }}
+                            disabled={card.revealed}
                             className={`
-                              aspect-square rounded-lg border-2 p-2
-                              flex flex-col items-center justify-center text-center
-                              transition-all
-                              ${isDisabled
-                                ? 'bg-gray-200 border-gray-300'
-                                : student
-                                  ? isFrontHalf && student.preferFront
-                                    ? 'bg-blue-100 border-blue-400 shadow-md'
-                                    : 'bg-white border-gray-300 shadow-sm'
-                                  : 'bg-gray-50 border-gray-200'
+                              min-h-20 rounded-lg border-2 p-2 text-center flex flex-col items-center justify-center
+                                ${card.revealed
+                                  ? 'bg-white border-blue-300 cursor-default'
+                                  : selectedLotteryCardIndex === index
+                                    ? 'bg-amber-100 border-amber-400'
+                                    : 'bg-blue-50 border-blue-200 hover:bg-blue-100 cursor-pointer'
                               }
                             `}
                           >
-                            {!isDisabled && student && (
-                              <>
+                            <div className="text-xs text-gray-500 mb-1">カード {index + 1}</div>
+                            <div className="text-sm font-semibold text-gray-800">
+                              {card.revealed ? getSeatNumber(card.seatIndex) : '未開示'}
+                            </div>
+                            {card.revealed && card.drawnBy && (
+                              <div className="text-xs text-gray-500 mt-1 break-all">
+                                {card.drawnBy}
+                              </div>
+                            )}
+                          </button>
+                        ))}
+                      </div>
+
+                      {lotteryCards.length === 0 && (
+                        <p className="text-center text-gray-400 py-6">
+                          まず「リセット」を押してカードを生成してください
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="grid grid-cols-1 gap-3">
+                      <Button
+                        variant="outline"
+                        onClick={downloadLotteryResultImage}
+                        disabled={
+                          isExporting
+                          || lotteryCards.length === 0
+                          || lotteryCards.some(card => !card.revealed)
+                        }
+                        className="gap-2 h-11"
+                      >
+                        <Download className="w-4 h-4" />
+                        くじ引き結果を画像として保存
+                      </Button>
+                    </div>
+
+                    <div ref={lotteryResultCaptureRef} className="bg-gray-50 p-6 rounded-lg">
+                      <div className="mb-4 text-center">
+                        <Badge className="bg-green-100 text-green-800 border-green-300">
+                          黒板・前方向
+                        </Badge>
+                      </div>
+
+                      <div
+                        className="grid gap-2 mx-auto"
+                        style={{
+                          gridTemplateColumns: `repeat(${seatLayout.cols}, minmax(0, 1fr))`,
+                          maxWidth: `${seatLayout.cols * 120}px`,
+                        }}
+                      >
+                        {Array.from({ length: totalSeats }).map((_, index) => {
+                          const isDisabled = seatLayout.disabled.includes(index);
+                          const assignedName = lotteryAssignments[index];
+
+                          return (
+                            <div
+                              key={`lottery-seat-${index}`}
+                              className={`
+                                aspect-square rounded-lg border-2 p-2
+                                flex flex-col items-center justify-center text-center
+                                ${isDisabled
+                                  ? 'bg-gray-200 border-gray-300'
+                                  : assignedName
+                                    ? 'bg-white border-gray-300 shadow-sm'
+                                    : 'bg-gray-50 border-gray-200'
+                                }
+                              `}
+                            >
+                              {!isDisabled && (
                                 <div className="text-xs text-gray-500 mb-1">
                                   {getSeatNumber(index)}
                                 </div>
+                              )}
+                              {!isDisabled && assignedName && (
                                 <div className="text-sm font-semibold text-gray-800 break-words w-full">
-                                  {student.name}
+                                  {assignedName}
                                 </div>
-                                {student.preferFront && (
-                                  <Badge variant="secondary" className="mt-1 text-xs bg-blue-200 text-blue-800">
-                                    前側
-                                  </Badge>
-                                )}
-                              </>
-                            )}
-                            {!isDisabled && !student && (
-                              <div className="text-xs text-gray-400">空席</div>
-                            )}
-                            {isDisabled && (
-                              <div className="text-xs text-gray-400">×</div>
-                            )}
-                          </div>
-                        );
-                      })}
+                              )}
+                              {!isDisabled && !assignedName && (
+                                <div className="text-xs text-gray-400">未確定</div>
+                              )}
+                              {isDisabled && (
+                                <div className="text-xs text-gray-400">×</div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
-                  </div>
-                )}
-
-                {assignments.length === 0 && (
-                  <p className="text-center text-gray-400 py-12">
-                    席替えを実行すると、ここに結果が表示されます
-                  </p>
-                )}
+                  </TabsContent>
+                </Tabs>
               </CardContent>
             </Card>
           </TabsContent>
