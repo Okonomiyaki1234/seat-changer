@@ -261,7 +261,7 @@ export default function Home() {
             <CardContent className="space-y-3">
               <div className="flex gap-2">
                 <Input
-                  placeholder="toaru-school-3-A"
+                  placeholder="toaru-school-2026-3-A"
                   value={classCode}
                   onChange={(e) => setClassCode(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && loadTemplate()}
@@ -297,7 +297,7 @@ export default function Home() {
             <CardContent>
               <div className="flex gap-2">
                 <Input
-                  placeholder="betsuno-school-2-4"
+                  placeholder="betsuno-school-2026-2-4"
                   value={newClassCode}
                   onChange={(e) => setNewClassCode(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && createTemplate()}
